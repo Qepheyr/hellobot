@@ -62,10 +62,15 @@ def send_to_admin():
 def run_bot():
     bot.infinity_polling()
 
+# ... (rest of the code is the same)
+
 if __name__ == '__main__':
-    # Start bot in a separate thread so Flask can run
+    # Start bot in a separate thread
     t = threading.Thread(target=run_bot)
     t.start()
     
-    # Run Flask server
-    app.run(host='0.0.0.0', port=8080)
+    # Get the PORT from Railway, default to 5000 if not found
+    port = int(os.environ.get("PORT", 5000))
+    
+    # Run Flask with the correct port
+    app.run(host='0.0.0.0', port=port)
