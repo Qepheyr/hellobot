@@ -2,6 +2,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -12,208 +14,226 @@ const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const WEBSITE_URL = process.env.WEBSITE_URL || "https://earning-desire.ct.ws";
 
-// Validate environment variables
+// Validate
 if (!TOKEN) {
-    console.error("❌ ERROR: BOT_TOKEN is not set in .env file");
+    console.error("❌ ERROR: BOT_TOKEN is not set");
     process.exit(1);
 }
 
-if (!ADMIN_ID) {
-    console.error("❌ ERROR: ADMIN_ID is not set in .env file");
-    process.exit(1);
-}
-
-console.log("🤖 Bot Token:", TOKEN.substring(0, 10) + "...");
+console.log("🤖 Bot initialized");
 console.log("👑 Admin ID:", ADMIN_ID);
 console.log("🌐 Website URL:", WEBSITE_URL);
 
-// Create bot in POLLING mode
+// Create bot
 const bot = new TelegramBot(TOKEN, { 
-    polling: {
-        interval: 300,
-        autoStart: true,
-        params: {
-            timeout: 10
-        }
+    polling: true,
+    request: {
+        proxy: process.env.PROXY || null
     }
 });
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.static('public'));
 
-// --- API: RECEIVE MESSAGE FROM WEBSITE ---
+// Create public directory for images
+if (!fs.existsSync('public')) {
+    fs.mkdirSync('public');
+}
+if (!fs.existsSync('public/images')) {
+    fs.mkdirSync('public/images');
+}
+
+// Store user photos temporarily (in production use database)
+const userPhotos = new Map();
+
+// --- API: Send Message ---
 app.post('/send-message', async (req, res) => {
     try {
         const { userId, message, username, firstName, lastName } = req.body;
         
-        console.log("📨 Received message from website:", { userId, message });
+        console.log("📨 Message from:", userId, "->", message.substring(0, 50));
         
         if (!userId || !message) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Missing userId or message' 
-            });
+            return res.status(400).json({ error: 'Missing data' });
         }
 
-        // Format message for admin
-        const userInfo = `👤 ${firstName || ''} ${lastName || ''}`;
-        const adminMsg = `${userInfo} ${username ? `(@${username})` : ''}\n🆔 ${userId}\n\n📝 ${message}`;
-        
         // Send to Admin
+        const adminMsg = `📩 *New Message*\n\n👤 *From:* ${firstName || ''} ${lastName || ''}\n🔗 @${username || 'no_username'}\n🆔 ID: ${userId}\n\n📝 *Message:*\n${message}`;
+        
         try {
-            await bot.sendMessage(ADMIN_ID, adminMsg);
-            console.log("✅ Message sent to admin:", ADMIN_ID);
-        } catch (adminError) {
-            console.error("❌ Error sending to admin:", adminError.message);
+            await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'Markdown' });
+            console.log("✅ Sent to admin");
+        } catch (adminErr) {
+            console.error("Admin error:", adminErr.message);
         }
 
         // Send confirmation to User
         try {
-            await bot.sendMessage(userId, `✅ Your message has been sent to admin!\n\nYour message: "${message}"`);
-            console.log("✅ Confirmation sent to user:", userId);
-        } catch (userError) {
-            console.error("❌ Error sending confirmation to user:", userError.message);
+            await bot.sendMessage(userId, `✅ *Message Sent!*\n\nYour message has been delivered to admin.\n\n📝 *Your message:*\n${message}`, { 
+                parse_mode: 'Markdown' 
+            });
+            console.log("✅ Confirmation sent to user");
+        } catch (userErr) {
+            console.error("User error:", userErr.message);
         }
 
-        res.json({ 
-            success: true,
-            message: 'Message sent successfully'
-        });
+        res.json({ success: true });
         
     } catch (error) {
-        console.error('❌ API Error:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Failed to send message' 
-        });
+        console.error('API Error:', error);
+        res.status(500).json({ error: 'Failed to send' });
     }
 });
 
-// --- API: GET USER PHOTO ---
-app.get('/proxy-photo/:userId', async (req, res) => {
+// --- API: Get User Photo (Improved) ---
+app.get('/get-photo/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
-        console.log("📸 Requesting photo for user:", userId);
+        console.log("📸 Photo request for:", userId);
         
         if (!userId) {
-            return res.status(400).send("No user ID provided");
+            return res.redirect('https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=150');
         }
 
-        // Get user profile photos
+        // Check if we have cached photo
+        const cachePath = path.join(__dirname, 'public', 'images', `${userId}.jpg`);
+        
+        if (fs.existsSync(cachePath)) {
+            console.log("✅ Serving cached photo for", userId);
+            return res.sendFile(cachePath);
+        }
+
+        // Get photo from Telegram
         const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
         
         if (photos.total_count === 0) {
-            console.log("No photo found for user:", userId);
-            // Redirect to default placeholder
-            return res.redirect("https://via.placeholder.com/150/667eea/ffffff?text=" + encodeURIComponent("User"));
+            console.log("❌ No photo found for", userId);
+            // Generate avatar with first letter
+            const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(userId)}&background=667eea&color=fff&size=150`;
+            return res.redirect(avatarUrl);
         }
 
-        const fileId = photos.photos[0][0].file_id;
-        console.log("Found file ID:", fileId);
+        // Get the largest photo
+        const photoSizes = photos.photos[0];
+        const largestPhoto = photoSizes[photoSizes.length - 1];
+        const fileId = largestPhoto.file_id;
         
-        // Get the file link
-        const fileLink = await bot.getFileLink(fileId);
-        console.log("File link:", fileLink);
+        console.log("📸 Found photo for", userId, "file_id:", fileId);
         
-        // Stream the image
+        // Get file path
+        const file = await bot.getFile(fileId);
+        const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
+        
+        console.log("📸 File URL:", fileUrl);
+        
+        // Download and cache the image
         const response = await axios({
-            url: fileLink,
+            url: fileUrl,
             method: 'GET',
             responseType: 'stream'
         });
 
-        // Set appropriate headers
-        res.setHeader('Content-Type', response.headers['content-type']);
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+        // Create write stream
+        const writer = fs.createWriteStream(cachePath);
+        response.data.pipe(writer);
         
+        // Send the image
         response.data.pipe(res);
         
-    } catch (error) {
-        console.error('❌ Photo proxy error:', error.message);
-        res.redirect("https://via.placeholder.com/150/667eea/ffffff?text=Error");
-    }
-});
-
-// --- API: GET USER INFO ---
-app.get('/user-info/:userId', async (req, res) => {
-    try {
-        const userId = req.params.userId;
-        
-        // Since we can't directly get user info without them interacting with bot,
-        // we'll return basic info
-        res.json({
-            success: true,
-            userId: userId,
-            message: "User info will be available when user interacts with bot"
+        writer.on('finish', () => {
+            console.log("✅ Photo cached for", userId);
         });
+        
+        writer.on('error', (err) => {
+            console.error("Cache error:", err);
+        });
+        
     } catch (error) {
-        console.error('User info error:', error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error('❌ Photo error:', error.message);
+        // Fallback to avatar
+        const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(req.params.userId || 'User')}&background=667eea&color=fff&size=150`;
+        res.redirect(avatarUrl);
     }
 });
 
-// --- BOT COMMANDS ---
+// --- BOT: /start command with photo ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const firstName = msg.from.first_name || '';
     const lastName = msg.from.last_name || '';
-    const username = msg.from.username || '';
+    const username = msg.from.username || 'no_username';
     
-    console.log(`🚀 /start command from ${firstName} ${lastName} (@${username}) ID: ${userId}`);
+    console.log(`🚀 /start from ${firstName} (ID: ${userId})`);
 
     try {
-        // Get user profile photo
-        let photoSent = false;
+        // Try to get user photo
+        let photoUrl = `${process.env.RAILWAY_URL || `http://localhost:${port}`}/get-photo/${userId}`;
+        
+        // Get photos from Telegram
         const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
         
-        const messageText = `👋 *Hello ${firstName} ${lastName}!*\n\n` +
-                           `🆔 *Your ID:* \`${userId}\`\n` +
-                           `👤 *Username:* @${username || 'Not set'}\n\n` +
-                           `Click the button below to open the Mini App and send messages to admin.`;
-        
-        const opts = {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [[
-                    { 
-                        text: "📱 Open Mini App", 
-                        web_app: { 
-                            url: `${WEBSITE_URL}/index.php?user_id=${userId}&first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&username=${username}` 
-                        } 
-                    }
-                ]]
-            }
-        };
-
-        // Try to send with photo
+        let hasPhoto = false;
         if (photos.total_count > 0) {
-            try {
-                const fileId = photos.photos[0][0].file_id;
-                await bot.sendPhoto(chatId, fileId, {
-                    caption: messageText,
-                    ...opts
-                });
-                photoSent = true;
-            } catch (photoError) {
-                console.error("Photo send error:", photoError.message);
-                photoSent = false;
-            }
+            // Get the best quality photo
+            const photoSizes = photos.photos[0];
+            const bestPhoto = photoSizes[photoSizes.length - 1];
+            const fileId = bestPhoto.file_id;
+            
+            // Send photo with caption
+            await bot.sendPhoto(chatId, fileId, {
+                caption: `👋 *Hello ${firstName} ${lastName}!*\n\n` +
+                        `🆔 *Your ID:* \`${userId}\`\n` +
+                        `👤 *Username:* @${username}\n\n` +
+                        `📱 *Click the button below to open Mini App:*`,
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[
+                        { 
+                            text: "🚀 Open Mini App", 
+                            web_app: { 
+                                url: `${WEBSITE_URL}/index.php?user_id=${userId}&first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&username=${username}&photo_url=${encodeURIComponent(photoUrl)}` 
+                            } 
+                        }
+                    ]]
+                }
+            });
+            hasPhoto = true;
+            console.log("✅ Sent photo with /start");
         }
         
-        // If no photo or photo failed, send text message
-        if (!photoSent) {
-            await bot.sendMessage(chatId, messageText, opts);
+        // If no photo, send text message
+        if (!hasPhoto) {
+            await bot.sendMessage(chatId, 
+                `👋 *Hello ${firstName} ${lastName}!*\n\n` +
+                `🆔 *Your ID:* \`${userId}\`\n` +
+                `👤 *Username:* @${username}\n\n` +
+                `📱 *Click the button below to open Mini App:*`,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { 
+                                text: "🚀 Open Mini App", 
+                                web_app: { 
+                                    url: `${WEBSITE_URL}/index.php?user_id=${userId}&first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&username=${username}&photo_url=${encodeURIComponent(photoUrl)}` 
+                                } 
+                            }
+                        ]]
+                    }
+                }
+            );
+            console.log("✅ Sent text /start (no photo)");
         }
         
     } catch (error) {
-        console.error('❌ Start command error:', error);
+        console.error('❌ Start error:', error.message);
         
-        // Send fallback message
+        // Fallback
         await bot.sendMessage(chatId, 
-            `Welcome! Click below to open the Mini App:`,
+            `Welcome ${firstName}! Click below to open Mini App:`,
             {
                 reply_markup: {
                     inline_keyboard: [[
@@ -230,54 +250,25 @@ bot.onText(/\/start/, async (msg) => {
     }
 });
 
-// Handle any other messages
-bot.on('message', async (msg) => {
-    // Ignore /start command (already handled)
-    if (msg.text && msg.text.startsWith('/')) return;
-    
-    // Optional: Echo messages or handle other text
-    // console.log("Message received:", msg.text);
-});
-
-// Error handling for bot
-bot.on('polling_error', (error) => {
-    console.error('❌ Polling error:', error.code, error.message);
-});
-
-bot.on('webhook_error', (error) => {
-    console.error('❌ Webhook error:', error);
-});
-
-// Root endpoint
+// --- Health Check ---
 app.get('/', (req, res) => {
     res.json({
-        status: 'online',
-        service: 'Telegram Mini App Bot',
+        status: 'Bot is running',
         endpoints: {
+            getPhoto: 'GET /get-photo/:userId',
             sendMessage: 'POST /send-message',
-            userPhoto: 'GET /proxy-photo/:userId',
-            userInfo: 'GET /user-info/:userId'
-        },
-        botInfo: {
-            adminId: ADMIN_ID,
-            website: WEBSITE_URL
+            health: 'GET /health'
         }
     });
 });
 
-// Health check
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        bot: 'running'
-    });
+    res.json({ status: 'OK', time: new Date().toISOString() });
 });
 
 // Start server
 app.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
-    console.log(`🌐 Open in browser: http://localhost:${port}`);
-    console.log(`🤖 Bot is running in polling mode`);
-    console.log(`🔗 Website URL: ${WEBSITE_URL}`);
+    console.log(`🌐 Photo endpoint: http://localhost:${port}/get-photo/:userId`);
+    console.log(`🤖 Bot is polling for messages...`);
 });
