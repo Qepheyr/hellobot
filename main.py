@@ -2,8 +2,9 @@ import os
 import telebot
 import threading
 import requests
-from flask import Flask, request, jsonify, send_file, make_response
-import io
+import base64
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -13,83 +14,81 @@ WEB_APP_URL = "https://earning-desire.ct.ws"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# --- HELPER: HANDLE THE HANDSHAKE (CORS) ---
-def build_cors_response(data, code=200):
-    response = make_response(data, code)
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
+# --- ENABLE CORS (THE CONNECTION FIX) ---
+# This line automatically handles all "OPTIONS" checks and security headers.
+# It allows your InfinityFree site to talk to Railway.
+CORS(app, resources={r"/*": {"origins": "*"}}) 
 
 # --- BOT START ---
-@app.route('/')
-def home():
-    return "Bot Online"
-
 @bot.message_handler(commands=['start'])
 def start_command(message):
     try:
+        # Create button
         markup = telebot.types.InlineKeyboardMarkup()
         web_app = telebot.types.WebAppInfo(url=WEB_APP_URL)
         markup.add(telebot.types.InlineKeyboardButton("🚀 Open Mini App", web_app=web_app))
         
-        # Send photo directly in chat
-        photos = bot.get_user_profile_photos(message.from_user.id, limit=1)
-        if photos.total_count > 0:
-            photo_id = photos.photos[0][-1].file_id
-            bot.send_photo(message.chat.id, photo_id, 
-                           caption=f"Hello {message.from_user.first_name}!", reply_markup=markup)
-        else:
-            bot.reply_to(message, "Hello!", reply_markup=markup)
+        # Send simple welcome
+        bot.send_message(
+            message.chat.id, 
+            "👋 **Welcome!**\nClick the button below to open your profile.", 
+            reply_markup=markup, 
+            parse_mode="Markdown"
+        )
     except Exception as e:
         print(f"Start Error: {e}")
 
-# --- API 1: SEND MESSAGE (With OPTIONS fix) ---
-@app.route('/send_to_admin', methods=['POST', 'OPTIONS'])
+# --- API 1: SEND MESSAGE ---
+@app.route('/send_to_admin', methods=['POST'])
 def receive_message():
-    # 1. Answer the Browser's Security Question
-    if request.method == 'OPTIONS':
-        return build_cors_response(jsonify({'status': 'ok'}))
-
-    # 2. Process the Message
     try:
         data = request.json
         user = data.get('user_name', 'Unknown')
         msg = data.get('message', '')
         
-        bot.send_message(ADMIN_ID, f"📩 **New Website Msg**\n👤 {user}\n📝 {msg}", parse_mode="Markdown")
-        return build_cors_response(jsonify({"status": "success"}))
+        bot.send_message(ADMIN_ID, f"📩 **Website Message**\n👤 {user}\n📝 {msg}")
+        return jsonify({"status": "success"})
     except Exception as e:
-        return build_cors_response(jsonify({"error": str(e)}), 500)
+        return jsonify({"error": str(e)}), 500
 
-# --- API 2: PHOTO PROXY (With OPTIONS fix) ---
-@app.route('/proxy_photo', methods=['GET', 'OPTIONS'])
-def proxy_photo():
-    if request.method == 'OPTIONS':
-        return build_cors_response(jsonify({'status': 'ok'}))
-
+# --- API 2: BASE64 PHOTO (THE NEW METHOD) ---
+@app.route('/get_photo_base64', methods=['POST'])
+def get_photo_base64():
     try:
-        user_id = request.args.get('user_id')
-        if not user_id:
-            return "No ID", 400
-
+        data = request.json
+        user_id = data.get('user_id')
+        
+        # 1. Get Photo Info from Telegram
         photos = bot.get_user_profile_photos(int(user_id), limit=1)
+        
         if photos.total_count == 0:
-            # Redirect to placeholder if no photo
-            return requests.get("https://via.placeholder.com/150").content, 200
+            return jsonify({"status": "no_photo"})
 
-        file_id = photos.photos[0][-1].file_id
+        # 2. Get the file path
+        file_id = photos.photos[0][0].file_id # Use small version [0] for speed
         file_info = bot.get_file(file_id)
-        telegram_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-
-        # Download and forward
-        response = requests.get(telegram_url)
-        return send_file(io.BytesIO(response.content), mimetype='image/jpeg')
+        url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        
+        # 3. Download and Convert to Base64 Text
+        response = requests.get(url)
+        if response.status_code == 200:
+            # Convert binary image data to text string
+            base64_img = base64.b64encode(response.content).decode('utf-8')
+            return jsonify({
+                "status": "success", 
+                "image_data": f"data:image/jpeg;base64,{base64_img}"
+            })
+            
+        return jsonify({"status": "failed_download"})
 
     except Exception as e:
-        return f"Error: {e}", 500
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 # --- RUNNER ---
+@app.route('/')
+def index():
+    return "Bot Online"
+
 if __name__ == "__main__":
     bot.remove_webhook()
     t = threading.Thread(target=bot.infinity_polling)
