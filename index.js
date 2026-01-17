@@ -1,98 +1,93 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
-const https = require('https');
-const http = require('http');
-const fs = require('fs');
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Configuration
-const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = parseInt(process.env.ADMIN_ID);
-const WEBSITE_URL = process.env.WEBSITE_URL || "https://earning-desire.ct.ws";
-const BOT_URL = `https://api.telegram.org/bot${TOKEN}`;
+const TOKEN = process.env.BOT_TOKEN || '8502935085:AAEJY-IBTDIJL8emmP9avdp3MySbtH5rQn0';
+const ADMIN_ID = parseInt(process.env.ADMIN_ID || '8469993808');
+const WEBSITE_URL = process.env.WEBSITE_URL || 'https://earning-desire.ct.ws';
+const BACKEND_URL = process.env.RAILWAY_URL || 'https://web-production-dcc8f.up.railway.app';
 
-// Validate
-if (!TOKEN) {
-    console.error("❌ ERROR: BOT_TOKEN is not set");
-    process.exit(1);
-}
-
-console.log("🤖 Bot Token:", TOKEN.substring(0, 10) + "...");
+console.log("🤖 Bot starting...");
 console.log("👑 Admin ID:", ADMIN_ID);
 console.log("🌐 Website:", WEBSITE_URL);
+console.log("🔗 Backend:", BACKEND_URL);
 
 // Create bot
 const bot = new TelegramBot(TOKEN, { 
-    polling: true,
-    filepath: false // Don't save files locally
+    polling: true
 });
 
 // Middleware
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// --- SIMPLE PROFILE PICTURE ENDPOINT ---
-app.get('/profile-pic', async (req, res) => {
+// --- PROFILE PICTURE ENDPOINT ---
+app.get('/get-user-photo', async (req, res) => {
     try {
-        const userId = req.query.user_id;
+        const userId = req.query.user_id || req.query.uid;
         
         if (!userId) {
-            return res.status(400).send('No user ID');
+            console.log("❌ No user ID provided");
+            return sendDefaultAvatar(res, 'U');
         }
-
-        console.log("📸 Fetching profile pic for:", userId);
         
-        // Get user profile photos from Telegram
-        const response = await fetch(`${BOT_URL}/getUserProfilePhotos?user_id=${userId}&limit=1`);
-        const data = await response.json();
+        console.log("📸 Getting photo for user:", userId);
         
-        if (data.ok && data.result.total_count > 0) {
-            const fileId = data.result.photos[0][0].file_id;
+        try {
+            // Get user profile photos
+            const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
             
-            // Get file path
-            const fileResponse = await fetch(`${BOT_URL}/getFile?file_id=${fileId}`);
-            const fileData = await fileResponse.json();
-            
-            if (fileData.ok) {
-                const filePath = fileData.result.file_path;
-                const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${filePath}`;
+            if (photos.total_count > 0) {
+                const fileId = photos.photos[0][0].file_id;
+                console.log("✅ Found file_id:", fileId);
                 
-                console.log("✅ Found photo URL:", fileUrl);
-                
-                // Redirect to Telegram's file URL
-                return res.redirect(fileUrl);
+                try {
+                    const file = await bot.getFile(fileId);
+                    const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
+                    
+                    console.log("✅ Redirecting to Telegram file:", fileUrl);
+                    return res.redirect(fileUrl);
+                    
+                } catch (fileError) {
+                    console.error("File error:", fileError.message);
+                    return sendDefaultAvatar(res, userId.toString().charAt(0).toUpperCase());
+                }
+            } else {
+                console.log("❌ No profile photo found");
+                return sendDefaultAvatar(res, userId.toString().charAt(0).toUpperCase());
             }
+            
+        } catch (tgError) {
+            console.error("Telegram API error:", tgError.message);
+            return sendDefaultAvatar(res, userId.toString().charAt(0).toUpperCase());
         }
-        
-        // If no photo found, return default avatar
-        console.log("❌ No photo found, using default");
-        const defaultSvg = generateAvatar(userId);
-        res.setHeader('Content-Type', 'image/svg+xml');
-        return res.send(defaultSvg);
         
     } catch (error) {
-        console.error('❌ Profile pic error:', error.message);
-        const defaultSvg = generateAvatar('error');
-        res.setHeader('Content-Type', 'image/svg+xml');
-        res.send(defaultSvg);
+        console.error('❌ Photo endpoint error:', error.message);
+        return sendDefaultAvatar(res, 'E');
     }
 });
 
-// Generate SVG avatar
-function generateAvatar(text) {
-    const initial = text.charAt(0).toUpperCase();
-    const colors = ['#667eea', '#764ba2', '#f56565', '#ed8936', '#ecc94b', '#48bb78', '#38b2ac', '#4299e1'];
-    const color = colors[text.length % colors.length];
+function sendDefaultAvatar(res, initial) {
+    const colors = ['#667eea', '#764ba2', '#f56565', '#48bb78', '#ed8936'];
+    const color = colors[Math.abs(initial.charCodeAt(0)) % colors.length];
     
-    return `<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="100" cy="100" r="95" fill="${color}" stroke="white" stroke-width="2"/>
-        <text x="50%" y="50%" text-anchor="middle" dy=".35em" fill="white" font-size="80" font-family="Arial, sans-serif" font-weight="bold">
-            ${initial}
-        </text>
-    </svg>`;
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="100" cy="100" r="95" fill="${color}" stroke="white" stroke-width="2"/>
+    <text x="100" y="110" text-anchor="middle" fill="white" font-size="70" font-family="Arial, sans-serif" font-weight="bold">
+        ${initial}
+    </text>
+</svg>`;
+    
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(svg);
 }
 
 // --- SEND MESSAGE ENDPOINT ---
@@ -100,54 +95,70 @@ app.post('/send-message', async (req, res) => {
     try {
         const { userId, message, username, firstName, lastName } = req.body;
         
-        console.log("📨 Message from:", userId);
+        console.log("📨 New message from user:", userId);
+        console.log("Message:", message.substring(0, 50) + '...');
         
         if (!userId || !message) {
-            return res.json({ success: false, error: 'Missing data' });
+            return res.json({ success: false, error: 'Missing user ID or message' });
         }
 
-        // Prepare message for admin
+        // Format message for admin
         const adminMessage = `
-📩 *New Message from User*
+📩 *NEW MESSAGE FROM USER*
 
 👤 *Name:* ${firstName || ''} ${lastName || ''}
 🔗 *Username:* @${username || 'no_username'}
-🆔 *ID:* \`${userId}\`
+🆔 *User ID:* \`${userId}\`
 
 📝 *Message:*
 ${message}
+
+⏰ *Time:* ${new Date().toLocaleString()}
         `.trim();
 
         // Send to admin
+        let adminSent = false;
         try {
             await bot.sendMessage(ADMIN_ID, adminMessage, { parse_mode: 'Markdown' });
-            console.log("✅ Sent to admin");
+            adminSent = true;
+            console.log("✅ Message sent to admin");
         } catch (adminError) {
-            console.error("Admin error:", adminError.message);
+            console.error("❌ Failed to send to admin:", adminError.message);
         }
 
         // Send confirmation to user
+        let userSent = false;
         try {
             await bot.sendMessage(userId, `
-✅ *Message Sent Successfully!*
+✅ *MESSAGE SENT SUCCESSFULLY!*
 
 Your message has been delivered to the admin.
 
 📝 *Your message:*
 "${message}"
 
-Thank you for your message!
+Thank you for contacting us!
             `.trim(), { parse_mode: 'Markdown' });
+            userSent = true;
             console.log("✅ Confirmation sent to user");
         } catch (userError) {
-            console.error("User error:", userError.message);
+            console.error("❌ Failed to send confirmation:", userError.message);
         }
 
-        return res.json({ success: true });
+        return res.json({ 
+            success: adminSent || userSent,
+            adminSent,
+            userSent,
+            message: 'Message processed successfully'
+        });
         
     } catch (error) {
         console.error('❌ Send message error:', error);
-        return res.json({ success: false, error: error.message });
+        return res.json({ 
+            success: false, 
+            error: 'Internal server error',
+            details: error.message 
+        });
     }
 });
 
@@ -158,115 +169,129 @@ bot.onText(/\/start/, async (msg) => {
     const firstName = msg.from.first_name || '';
     const lastName = msg.from.last_name || '';
     const username = msg.from.username || '';
-
-    console.log(`🚀 /start from ${firstName} (ID: ${userId})`);
+    
+    console.log(`🚀 /start command from ${firstName} (ID: ${userId})`);
 
     try {
-        // Try to get profile photo
-        let photoUrl = '';
-        try {
-            const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
-            if (photos.total_count > 0) {
-                const fileId = photos.photos[0][0].file_id;
-                const file = await bot.getFile(fileId);
-                photoUrl = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`;
-            }
-        } catch (photoError) {
-            console.log("Photo error, using default");
-        }
-
-        // Create web app URL
-        const webAppUrl = new URL(WEBSITE_URL + '/index.php');
-        webAppUrl.searchParams.append('user_id', userId);
-        webAppUrl.searchParams.append('first_name', firstName);
-        webAppUrl.searchParams.append('last_name', lastName);
-        webAppUrl.searchParams.append('username', username);
-        if (photoUrl) {
-            webAppUrl.searchParams.append('photo_url', photoUrl);
-        }
-
-        // Prepare message
+        // Create web app URL with all parameters
+        const photoUrl = `${BACKEND_URL}/get-user-photo?user_id=${userId}`;
+        const webAppUrl = `${WEBSITE_URL}/index.php?` + 
+            `user_id=${userId}&` +
+            `first_name=${encodeURIComponent(firstName)}&` +
+            `last_name=${encodeURIComponent(lastName)}&` +
+            `username=${encodeURIComponent(username)}&` +
+            `photo_url=${encodeURIComponent(photoUrl)}`;
+        
         const messageText = `👋 *Welcome ${firstName}!*\n\n` +
                            `🆔 *Your ID:* \`${userId}\`\n` +
                            `👤 *Username:* @${username || 'no_username'}\n\n` +
-                           `Click the button below to open the Mini App and send messages to admin:`;
+                           `Click the button below to open the Mini App:`;
 
         const keyboard = {
             inline_keyboard: [[
                 {
                     text: "📱 Open Mini App",
-                    web_app: { url: webAppUrl.toString() }
+                    web_app: { url: webAppUrl }
                 }
             ]]
         };
 
-        // Send with photo if available
-        if (photoUrl) {
-            try {
-                // Get file_id for sending
-                const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
-                if (photos.total_count > 0) {
-                    const fileId = photos.photos[0][0].file_id;
-                    await bot.sendPhoto(chatId, fileId, {
-                        caption: messageText,
-                        parse_mode: 'Markdown',
-                        reply_markup: keyboard
-                    });
-                    console.log("✅ Sent with photo");
-                    return;
-                }
-            } catch (sendError) {
-                console.log("Couldn't send photo:", sendError.message);
+        // Try to send with profile photo
+        try {
+            const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
+            if (photos.total_count > 0) {
+                const fileId = photos.photos[0][0].file_id;
+                await bot.sendPhoto(chatId, fileId, {
+                    caption: messageText,
+                    parse_mode: 'Markdown',
+                    reply_markup: keyboard
+                });
+                console.log("✅ Sent /start with photo");
+                return;
             }
+        } catch (photoError) {
+            console.log("Photo send failed, falling back to text:", photoError.message);
         }
 
-        // Fallback: Send without photo
+        // Fallback to text message
         await bot.sendMessage(chatId, messageText, {
             parse_mode: 'Markdown',
             reply_markup: keyboard
         });
-        console.log("✅ Sent as text message");
-
+        console.log("✅ Sent /start as text");
+        
     } catch (error) {
         console.error('❌ /start error:', error.message);
         
-        // Ultimate fallback
-        await bot.sendMessage(chatId, 
-            `Welcome ${firstName}! Click below to open Mini App:`,
-            {
-                reply_markup: {
-                    inline_keyboard: [[
-                        { 
-                            text: "📱 Open Mini App", 
-                            web_app: { url: WEBSITE_URL + '/index.php?user_id=' + userId } 
-                        }
-                    ]]
+        // Simple fallback
+        try {
+            await bot.sendMessage(chatId, 
+                `Welcome ${firstName}! Click below to open Mini App:`,
+                {
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { 
+                                text: "📱 Open Mini App", 
+                                web_app: { 
+                                    url: `${WEBSITE_URL}/index.php?user_id=${userId}` 
+                                } 
+                            }
+                        ]]
+                    }
                 }
-            }
-        );
+            );
+        } catch (fallbackError) {
+            console.error("Fallback also failed:", fallbackError.message);
+        }
     }
 });
 
-// --- HEALTH CHECK ---
+// Handle other messages
+bot.on('message', (msg) => {
+    if (msg.text && !msg.text.startsWith('/')) {
+        // Optional: handle other messages
+        // console.log("Message from", msg.from.id, ":", msg.text);
+    }
+});
+
+// --- HEALTH ENDPOINTS ---
 app.get('/', (req, res) => {
     res.json({
-        status: 'Bot Server Running',
+        status: 'Telegram Bot Server Running',
+        version: '1.0.0',
         endpoints: {
-            profilePic: 'GET /profile-pic?user_id=USER_ID',
+            profilePhoto: 'GET /get-user-photo?user_id=USER_ID',
             sendMessage: 'POST /send-message',
             health: 'GET /health'
         },
-        bot: 'Active'
+        bot: {
+            adminId: ADMIN_ID,
+            webAppUrl: WEBSITE_URL + '/index.php'
+        }
     });
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    res.json({ 
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
 // --- START SERVER ---
-app.listen(port, '0.0.0.0', () => {
+const server = app.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
-    console.log(`📸 Profile pic endpoint: http://0.0.0.0:${port}/profile-pic?user_id=USER_ID`);
+    console.log(`📸 Profile photo: ${BACKEND_URL}/get-user-photo?user_id=USER_ID`);
     console.log(`🤖 Bot is ready! Send /start to test`);
+    console.log(`🌐 Web App: ${WEBSITE_URL}/index.php`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
 });
