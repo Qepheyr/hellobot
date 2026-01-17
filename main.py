@@ -1,62 +1,84 @@
 import os
 import telebot
 import logging
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import threading
 import time
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
 
-# 1. MAX LOGGING
-logging.basicConfig(level=logging.DEBUG) # Show ALL debug info
-logger = logging.getLogger(__name__)
+# 1. SETUP LOGGING
+# This will show up in Railway "Deploy Logs"
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("RailwayBot")
 
-# 2. SETUP
-BOT_TOKEN = "8502935085:AAEJY-IBTDIJL8emmP9avdp3MySbtH5rQn0"
-ADMIN_ID = "8469993808"
+# 2. CONFIG
+load_dotenv()
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8502935085:AAEJY-IBTDIJL8emmP9avdp3MySbtH5rQn0')
+ADMIN_ID = os.getenv('ADMIN_ID', '8469993808')
 WEB_APP_URL = "https://earning-desire.ct.ws"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 CORS(app)
 
+# --- BOT COMMANDS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    logger.info(f"GOT COMMAND: /start from {message.from_user.id}") # LOG THIS
+    logger.info(f"✅ RECEIVED /start from {message.from_user.first_name}")
     try:
         markup = telebot.types.InlineKeyboardMarkup()
         web_app = telebot.types.WebAppInfo(url=WEB_APP_URL)
         markup.add(telebot.types.InlineKeyboardButton("🚀 Open Mini App", web_app=web_app))
-        bot.reply_to(message, "✅ Bot is Online! Click below:", reply_markup=markup)
+        
+        bot.reply_to(message, "👋 **Bot is Online!**\nClick below to open:", 
+                     reply_markup=markup, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"ERROR REPLYING: {e}")
+        logger.error(f"❌ Error sending reply: {e}")
 
+# --- FLASK ROUTES ---
 @app.route('/')
 def home():
-    return "✅ Backend is running!", 200
+    return "✅ Bot Backend is Running!", 200
 
 @app.route('/send_to_admin', methods=['POST'])
 def send_to_admin():
-    data = request.json
-    bot.send_message(ADMIN_ID, f"Message from {data.get('user_name')}: {data.get('message')}")
-    return jsonify({"status": "sent"})
-
-def start_bot():
-    logger.info("--- ATTEMPTING TO CONNECT TO TELEGRAM ---")
     try:
-        # Remove webhook internally just in case
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.infinity_polling(timeout=10, long_polling_timeout=5)
-    except Exception as e:
-        logger.critical(f"BOT CRASHED: {e}")
+        data = request.json
+        user_name = data.get('user_name', 'Unknown')
+        user_id = data.get('user_id', 'Unknown')
+        msg = data.get('message', '')
 
+        logger.info(f"📩 Message from website: {user_name}")
+        bot.send_message(ADMIN_ID, f"🔔 **Website Msg**\n👤 {user_name}\n📝 {msg}", parse_mode="Markdown")
+        return jsonify({"status": "success"})
+    except Exception as e:
+        logger.error(f"API Error: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+# --- BACKGROUND RUNNER ---
+def run_bot_loop():
+    logger.info("🔄 Removing old Webhooks...")
+    bot.remove_webhook() # <--- THIS FIXES THE SILENT FAILURES
+    time.sleep(1)
+    
+    logger.info("🚀 Starting Bot Polling...")
+    while True:
+        try:
+            # interval=2 makes it check for messages every 2 seconds
+            bot.polling(none_stop=True, interval=2, timeout=20)
+        except Exception as e:
+            logger.error(f"⚠️ Polling Error: {e}")
+            time.sleep(5) # Wait and restart if it crashes
+
+# --- STARTUP ---
 if __name__ == '__main__':
-    # Start Bot Thread
-    t = threading.Thread(target=start_bot)
+    # 1. Start Bot Thread
+    t = threading.Thread(target=run_bot_loop)
     t.daemon = True
     t.start()
     
-    # Start Server
+    # 2. Start Web Server
     port = int(os.environ.get("PORT", 5000))
-    logger.info(f"--- STARTING FLASK ON PORT {port} ---")
+    logger.info(f"🌍 Starting Web Server on Port {port}")
     app.run(host='0.0.0.0', port=port)
