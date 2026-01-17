@@ -1,59 +1,160 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Create bot
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-const ADMIN_ID = process.env.ADMIN_ID;
-const WEBSITE_URL = process.env.WEBSITE_URL;
+// Configuration
+const TOKEN = process.env.BOT_TOKEN;
+const ADMIN_ID = parseInt(process.env.ADMIN_ID);
+const WEBSITE_URL = process.env.WEBSITE_URL || "https://earning-desire.ct.ws";
 
-// Store to keep track of messages (in production use database)
-const userMessages = new Map();
+// Validate environment variables
+if (!TOKEN) {
+    console.error("❌ ERROR: BOT_TOKEN is not set in .env file");
+    process.exit(1);
+}
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+if (!ADMIN_ID) {
+    console.error("❌ ERROR: ADMIN_ID is not set in .env file");
+    process.exit(1);
+}
 
-// Webhook for receiving messages from mini app
-app.post('/send-message', async (req, res) => {
-    try {
-        const { userId, message, userPhoto, username, firstName, lastName } = req.body;
-        
-        if (!userId || !message) {
-            return res.status(400).json({ error: 'Missing required fields' });
+console.log("🤖 Bot Token:", TOKEN.substring(0, 10) + "...");
+console.log("👑 Admin ID:", ADMIN_ID);
+console.log("🌐 Website URL:", WEBSITE_URL);
+
+// Create bot in POLLING mode
+const bot = new TelegramBot(TOKEN, { 
+    polling: {
+        interval: 300,
+        autoStart: true,
+        params: {
+            timeout: 10
         }
-
-        // Format user info
-        const userInfo = `👤 ${firstName || ''} ${lastName || ''} ${username ? `(@${username})` : ''}`;
-        const fullMessage = `${userInfo}\n\n📨 Message: ${message}`;
-
-        // Send to admin
-        await bot.sendMessage(ADMIN_ID, fullMessage);
-
-        // Send confirmation to user
-        await bot.sendMessage(userId, `✅ Your message has been sent to admin!\n\nYour message: ${message}`);
-
-        // Store message (optional)
-        if (!userMessages.has(userId)) {
-            userMessages.set(userId, []);
-        }
-        userMessages.get(userId).push({
-            message,
-            timestamp: new Date().toISOString()
-        });
-
-        res.json({ success: true, message: 'Message sent successfully' });
-    } catch (error) {
-        console.error('Error sending message:', error);
-        res.status(500).json({ error: 'Failed to send message' });
     }
 });
 
-// Bot commands
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// --- API: RECEIVE MESSAGE FROM WEBSITE ---
+app.post('/send-message', async (req, res) => {
+    try {
+        const { userId, message, username, firstName, lastName } = req.body;
+        
+        console.log("📨 Received message from website:", { userId, message });
+        
+        if (!userId || !message) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing userId or message' 
+            });
+        }
+
+        // Format message for admin
+        const userInfo = `👤 ${firstName || ''} ${lastName || ''}`;
+        const adminMsg = `${userInfo} ${username ? `(@${username})` : ''}\n🆔 ${userId}\n\n📝 ${message}`;
+        
+        // Send to Admin
+        try {
+            await bot.sendMessage(ADMIN_ID, adminMsg);
+            console.log("✅ Message sent to admin:", ADMIN_ID);
+        } catch (adminError) {
+            console.error("❌ Error sending to admin:", adminError.message);
+        }
+
+        // Send confirmation to User
+        try {
+            await bot.sendMessage(userId, `✅ Your message has been sent to admin!\n\nYour message: "${message}"`);
+            console.log("✅ Confirmation sent to user:", userId);
+        } catch (userError) {
+            console.error("❌ Error sending confirmation to user:", userError.message);
+        }
+
+        res.json({ 
+            success: true,
+            message: 'Message sent successfully'
+        });
+        
+    } catch (error) {
+        console.error('❌ API Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to send message' 
+        });
+    }
+});
+
+// --- API: GET USER PHOTO ---
+app.get('/proxy-photo/:userId', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        console.log("📸 Requesting photo for user:", userId);
+        
+        if (!userId) {
+            return res.status(400).send("No user ID provided");
+        }
+
+        // Get user profile photos
+        const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
+        
+        if (photos.total_count === 0) {
+            console.log("No photo found for user:", userId);
+            // Redirect to default placeholder
+            return res.redirect("https://via.placeholder.com/150/667eea/ffffff?text=" + encodeURIComponent("User"));
+        }
+
+        const fileId = photos.photos[0][0].file_id;
+        console.log("Found file ID:", fileId);
+        
+        // Get the file link
+        const fileLink = await bot.getFileLink(fileId);
+        console.log("File link:", fileLink);
+        
+        // Stream the image
+        const response = await axios({
+            url: fileLink,
+            method: 'GET',
+            responseType: 'stream'
+        });
+
+        // Set appropriate headers
+        res.setHeader('Content-Type', response.headers['content-type']);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+        
+        response.data.pipe(res);
+        
+    } catch (error) {
+        console.error('❌ Photo proxy error:', error.message);
+        res.redirect("https://via.placeholder.com/150/667eea/ffffff?text=Error");
+    }
+});
+
+// --- API: GET USER INFO ---
+app.get('/user-info/:userId', async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        
+        // Since we can't directly get user info without them interacting with bot,
+        // we'll return basic info
+        res.json({
+            success: true,
+            userId: userId,
+            message: "User info will be available when user interacts with bot"
+        });
+    } catch (error) {
+        console.error('User info error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// --- BOT COMMANDS ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
@@ -61,98 +162,122 @@ bot.onText(/\/start/, async (msg) => {
     const lastName = msg.from.last_name || '';
     const username = msg.from.username || '';
     
-    try {
-        // Get user profile photos
-        const photos = await bot.getUserProfilePhotos(userId);
-        
-        let profilePhotoUrl = '';
-        if (photos && photos.total_count > 0) {
-            const photo = photos.photos[0][photos.photos[0].length - 1];
-            const file = await bot.getFile(photo.file_id);
-            profilePhotoUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-        }
+    console.log(`🚀 /start command from ${firstName} ${lastName} (@${username}) ID: ${userId}`);
 
-        // Create inline keyboard with mini app button
-        const keyboard = {
-            inline_keyboard: [
-                [{
-                    text: "📱 Open Mini App",
-                    web_app: { url: `${WEBSITE_URL}/index.php?user_id=${userId}` }
-                }],
-                [{
-                    text: "🔄 Refresh",
-                    callback_data: 'refresh_profile'
-                }]
-            ]
+    try {
+        // Get user profile photo
+        let photoSent = false;
+        const photos = await bot.getUserProfilePhotos(userId, { limit: 1 });
+        
+        const messageText = `👋 *Hello ${firstName} ${lastName}!*\n\n` +
+                           `🆔 *Your ID:* \`${userId}\`\n` +
+                           `👤 *Username:* @${username || 'Not set'}\n\n` +
+                           `Click the button below to open the Mini App and send messages to admin.`;
+        
+        const opts = {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[
+                    { 
+                        text: "📱 Open Mini App", 
+                        web_app: { 
+                            url: `${WEBSITE_URL}/index.php?user_id=${userId}&first_name=${encodeURIComponent(firstName)}&last_name=${encodeURIComponent(lastName)}&username=${username}` 
+                        } 
+                    }
+                ]]
+            }
         };
 
-        // Send user details with photo if available
-        let caption = `👤 *User Details*\n\n` +
-                     `🆔 ID: ${userId}\n` +
-                     `📛 Name: ${firstName} ${lastName}\n` +
-                     `🔗 Username: @${username || 'Not set'}\n\n` +
-                     `Click the button below to open the mini app:`;
-
-        if (profilePhotoUrl) {
-            await bot.sendPhoto(chatId, profilePhotoUrl, {
-                caption: caption,
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
-            });
-        } else {
-            await bot.sendMessage(chatId, caption, {
-                parse_mode: 'Markdown',
-                reply_markup: keyboard
-            });
-        }
-
-    } catch (error) {
-        console.error('Error in /start command:', error);
-        await bot.sendMessage(chatId, 'Welcome! Click below to open the mini app:', {
-            reply_markup: {
-                inline_keyboard: [[{
-                    text: "📱 Open Mini App",
-                    web_app: { url: `${WEBSITE_URL}/index.php?user_id=${userId}` }
-                }]]
+        // Try to send with photo
+        if (photos.total_count > 0) {
+            try {
+                const fileId = photos.photos[0][0].file_id;
+                await bot.sendPhoto(chatId, fileId, {
+                    caption: messageText,
+                    ...opts
+                });
+                photoSent = true;
+            } catch (photoError) {
+                console.error("Photo send error:", photoError.message);
+                photoSent = false;
             }
-        });
+        }
+        
+        // If no photo or photo failed, send text message
+        if (!photoSent) {
+            await bot.sendMessage(chatId, messageText, opts);
+        }
+        
+    } catch (error) {
+        console.error('❌ Start command error:', error);
+        
+        // Send fallback message
+        await bot.sendMessage(chatId, 
+            `Welcome! Click below to open the Mini App:`,
+            {
+                reply_markup: {
+                    inline_keyboard: [[
+                        { 
+                            text: "📱 Open Mini App", 
+                            web_app: { 
+                                url: `${WEBSITE_URL}/index.php?user_id=${userId}` 
+                            } 
+                        }
+                    ]]
+                }
+            }
+        );
     }
 });
 
-// Handle callback queries
-bot.on('callback_query', async (callbackQuery) => {
-    const msg = callbackQuery.message;
-    const data = callbackQuery.data;
-    
-    if (data === 'refresh_profile') {
-        await bot.answerCallbackQuery(callbackQuery.id);
-        await bot.deleteMessage(msg.chat.id, msg.message_id);
-        await bot.sendMessage(msg.chat.id, 'Please send /start again to refresh your profile.');
-    }
-});
-
-// Handle any text message
+// Handle any other messages
 bot.on('message', async (msg) => {
-    if (msg.text && !msg.text.startsWith('/')) {
-        // Optional: Echo messages or handle other text
-        // await bot.sendMessage(msg.chat.id, `You said: ${msg.text}`);
-    }
+    // Ignore /start command (already handled)
+    if (msg.text && msg.text.startsWith('/')) return;
+    
+    // Optional: Echo messages or handle other text
+    // console.log("Message received:", msg.text);
 });
 
-// Set webhook for bot (if using webhooks instead of polling)
-app.post(`/webhook/${process.env.BOT_TOKEN}`, (req, res) => {
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
+// Error handling for bot
+bot.on('polling_error', (error) => {
+    console.error('❌ Polling error:', error.code, error.message);
+});
+
+bot.on('webhook_error', (error) => {
+    console.error('❌ Webhook error:', error);
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        service: 'Telegram Mini App Bot',
+        endpoints: {
+            sendMessage: 'POST /send-message',
+            userPhoto: 'GET /proxy-photo/:userId',
+            userInfo: 'GET /user-info/:userId'
+        },
+        botInfo: {
+            adminId: ADMIN_ID,
+            website: WEBSITE_URL
+        }
+    });
+});
+
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        bot: 'running'
+    });
 });
 
 // Start server
 app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-    console.log(`Bot is running in polling mode`);
-    console.log(`Mini app URL: ${WEBSITE_URL}/index.php`);
-});
-
-// Error handling
-bot.on('error', (error) => {
-    console.error('Bot error:', error);
+    console.log(`✅ Server running on port ${port}`);
+    console.log(`🌐 Open in browser: http://localhost:${port}`);
+    console.log(`🤖 Bot is running in polling mode`);
+    console.log(`🔗 Website URL: ${WEBSITE_URL}`);
 });
