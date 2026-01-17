@@ -1,4 +1,0 @@
-Flask
-pyTelegramBotAPI
-flask-cors
-requests
