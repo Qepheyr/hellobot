@@ -1,12 +1,11 @@
 {
   "name": "telegram-mini-app-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for mini app with profile pictures",
+  "description": "Telegram bot for mini app",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "test": "echo \"No tests specified\" && exit 0"
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
@@ -16,8 +15,5 @@
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "keywords": ["telegram", "bot", "mini-app"],
-  "author": "",
-  "license": "MIT"
+  }
 }
